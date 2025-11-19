@@ -2,9 +2,15 @@ import React from "react";
 
 const App = () => {
   return (
-    <div>
-      <h1 className="text-3xl font-bold underline">Hello World</h1>
-    </div>
+    <main>
+      <header>
+        <img src="./hero-img.png" alt="logo" />
+        <h1>
+          Find <span className="text-gradient">Movies </span> You'll Enjoy
+          Without The Hassle
+        </h1>
+      </header>
+    </main>
   );
 };
 
