@@ -1,10 +1,10 @@
-import React, { useState, useEffect, use } from "react";
-import Search from "./components/search.jsx";
-import Spinner from "./components/Spinner.jsx";
-import MovieCard from "./components/movieCard.jsx";
+import React, { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import Search from "./Components/search.jsx";
+import Spinner from "./Components/Spinner.jsx";
+import MovieCard from "./Components/movieCard.jsx";
 import { useDebounce } from "react-use";
-import { updateSearchCount } from "./appwrite.js";
-import { getTrendingMovies } from "./appwrite.js";
+import { updateSearchCount, getTrendingMovies } from "./appwrite.js";
 
 const API_BASE_URL = "https://api.themoviedb.org/3";
 const API_KEY = import.meta.env.VITE_TMDB_API_KEY;
@@ -17,13 +17,38 @@ const API_OPTIONS = {
   },
 };
 
+const fetchMoviesData = async (query = "") => {
+  let endpoint = `${API_BASE_URL}/discover/movie?sort_by=popularity.desc`;
+  if (query) {
+    endpoint = `${API_BASE_URL}/search/movie?query=${encodeURIComponent(
+      query
+    )}`;
+  }
+
+  const response = await fetch(endpoint, API_OPTIONS);
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  if (!data.results) {
+    throw new Error("Invalid response format.");
+  }
+
+  return data.results;
+};
+
+const fetchTrendingMoviesData = async () => {
+  return getTrendingMovies();
+};
+
 const App = () => {
   const [searchTerm, setSearchTerm] = useState("");
-  const [movies, setMovies] = useState([]);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
-  const [trendingMovies, setTrendingMovies] = useState([]);
+
+  const queryClient = useQueryClient();
 
   useDebounce(
     () => {
@@ -32,76 +57,63 @@ const App = () => {
     500,
     [searchTerm]
   );
+  const {
+    data: movies,
+    isLoading: isMoviesLoading,
+    isError: isMoviesError,
+    error: moviesError,
+  } = useQuery({
+    queryKey: ["movies", debouncedSearchTerm],
+    queryFn: () => fetchMoviesData(debouncedSearchTerm),
+    staleTime: 5 * 60 * 1000,
+  });
 
-  const fetchMovies = async (query = "") => {
-    setIsLoading(true);
-    setErrorMessage("");
-    setMovies([]);
+  const {
+    data: trendingMovies = [],
+    isLoading: isTrendingLoading,
+    isError: isTrendingError,
+  } = useQuery({
+    queryKey: ["trendingMovies"],
+    queryFn: fetchTrendingMoviesData,
+    staleTime: Infinity,
+  });
 
-    try {
-      let endpoint = `${API_BASE_URL}/discover/movie?sort_by=popularity.desc`;
-      if (query) {
-        endpoint = `${API_BASE_URL}/search/movie?query=${encodeURIComponent(
-          query
-        )}`;
-      }
+  const updateCountMutation = useMutation({
+    mutationFn: ({ query, movie }) => updateSearchCount(query, movie),
+    onSuccess: () => {},
+    onError: (error) => {
+      console.error("Failed to update search count:", error);
+    },
+  });
 
-      const response = await fetch(endpoint, API_OPTIONS);
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      // Check for no results
-      if (!data.results || data.results.length === 0) {
-        if (query) {
-          setErrorMessage(`No results found for "${query}".`);
-        } else {
-          setErrorMessage("Could not load initial movies.");
-        }
-        setMovies([]);
-        return;
-      }
-
-      setMovies(data.results);
-
-      if (query && data.results.length > 0) {
-        await updateSearchCount(query, data.results[0]);
-      }
-    } catch (error) {
-      console.error(`Error fetching movies: ${error.message}`);
-      setErrorMessage("Failed to fetch movies. Please try again later.");
-      setMovies([]);
-    } finally {
-      setIsLoading(false);
+  React.useEffect(() => {
+    if (debouncedSearchTerm && movies && movies.length > 0) {
+      updateCountMutation.mutate({
+        query: debouncedSearchTerm,
+        movie: movies[0],
+      });
     }
-  };
+  }, [debouncedSearchTerm, movies]);
 
-  const loadTrendingMovies = async () => {
-    try {
-      const movies = await getTrendingMovies();
-
-      setTrendingMovies(movies);
-    } catch (error) {
-      console.error(`Error fetching trending movies:", ${error}`);
+  const errorMessage = (() => {
+    if (isMoviesError) {
+      return "Failed to fetch movies. Please try again later.";
     }
-  };
-
-  useEffect(() => {
-    if (!searchTerm) {
-      fetchMovies();
+    if (debouncedSearchTerm && movies && movies.length === 0) {
+      return `No results found for "${debouncedSearchTerm}".`;
     }
-  }, []);
+    if (
+      !debouncedSearchTerm &&
+      movies &&
+      movies.length === 0 &&
+      !isMoviesLoading
+    ) {
+      return "Could not load initial movies.";
+    }
+    return "";
+  })();
 
-  useEffect(() => {
-    fetchMovies(debouncedSearchTerm);
-  }, [debouncedSearchTerm]);
-
-  useEffect(() => {
-    loadTrendingMovies();
-  }, []);
+  const displayMovies = movies || [];
 
   return (
     <main>
@@ -117,17 +129,23 @@ const App = () => {
           <Search searchTerm={searchTerm} setSearchTerm={setSearchTerm} />
         </header>
 
-        {trendingMovies.length > 0 && (
+        {(isTrendingLoading || trendingMovies.length > 0) && (
           <section className="trending">
             <h2>Trending Movies</h2>
-            <ul>
-              {trendingMovies.map((movie, index) => (
-                <li key={movie.$id}>
-                  <p>{index + 1}</p>
-                  <img src={movie.poster_url} alt={movie.title} />
-                </li>
-              ))}
-            </ul>
+            {isTrendingLoading ? (
+              <Spinner />
+            ) : trendingMovies.length > 0 ? (
+              <ul>
+                {trendingMovies.map((movie, index) => (
+                  <li key={movie.$id}>
+                    <p>{index + 1}</p>
+                    <img src={movie.poster_url} alt={movie.title} />
+                  </li>
+                ))}
+              </ul>
+            ) : isTrendingError ? (
+              <p className="text-red-500">Failed to load trending movies.</p>
+            ) : null}
           </section>
         )}
 
@@ -136,13 +154,13 @@ const App = () => {
             {searchTerm ? `Search Results for "${searchTerm}"` : "All Movies"}
           </h2>
 
-          {isLoading ? (
+          {isMoviesLoading ? (
             <Spinner />
           ) : errorMessage ? (
             <p className="text-red-500">{errorMessage}</p>
           ) : (
             <ul>
-              {movies.map((movie) => (
+              {displayMovies.map((movie) => (
                 <MovieCard key={movie.id} movie={movie} />
               ))}
             </ul>
